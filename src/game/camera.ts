@@ -21,6 +21,8 @@ export function createFollowCamera(
   camera.upperRadiusLimit = 22;
   camera.lowerBetaLimit = 0.25;
   camera.upperBetaLimit = Math.PI / 2 - 0.12;
+  camera.minZ = 0.2;
+  camera.maxZ = 500;
   camera.panningSensibility = 0;
   camera.wheelDeltaPercentage = 0.01;
   camera.attachControl(canvas, true);

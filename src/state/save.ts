@@ -1,6 +1,6 @@
 import { playerDefaults } from "../data/player";
-import { killHryaksQuest } from "../data/quests";
-import { items, type ItemId } from "../data/items";
+import { questById, killHryaksQuest } from "../data/quests";
+import { EMPTY_BAG, items, type ItemId } from "../data/items";
 import type { QuestState, QuestStatus } from "./gameStore";
 
 export const SAVE_KEY = "shatalker-save-v1";
@@ -20,6 +20,7 @@ export type SaveBlob = {
   z: number;
   quest: QuestState;
   inventory: Record<ItemId, number>;
+  radiation: number;
 };
 
 export type SavePayload = Omit<SaveBlob, "v" | "x" | "z">;
@@ -43,13 +44,15 @@ export function loadSave(): SaveBlob | null {
     if (!raw) return null;
     const data = JSON.parse(raw) as Partial<SaveBlob>;
     if (data.v !== 1) return null;
-    const inventory: Record<ItemId, number> = { medkit_small: 0, hryak_meat: 0 };
+    const inventory: Record<ItemId, number> = { ...EMPTY_BAG };
     for (const id of Object.keys(items) as ItemId[]) {
       inventory[id] = Math.max(0, Math.floor(num(data.inventory?.[id], 0)));
     }
     const questIn = data.quest;
+    const questId =
+      typeof questIn?.id === "string" && questIn.id ? questById(questIn.id).id : killHryaksQuest.id;
     const quest: QuestState = {
-      id: killHryaksQuest.id,
+      id: questId,
       status: isQuestStatus(questIn?.status) ? questIn.status : "available",
       progress: Math.max(0, Math.floor(num(questIn?.progress, 0))),
     };
@@ -68,6 +71,7 @@ export function loadSave(): SaveBlob | null {
       z: num(data.z, 0),
       quest,
       inventory,
+      radiation: Math.max(0, Math.min(100, Math.floor(num(data.radiation, 0)))),
     };
     lastX = blob.x;
     lastZ = blob.z;

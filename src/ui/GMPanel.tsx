@@ -37,6 +37,15 @@ export function GMPanel() {
       <button type="button" onClick={() => getGameApi()?.spawnMonster()}>
         Spawn Monster
       </button>
+      <button type="button" onClick={() => getGameApi()?.spawnRyskar()}>
+        Spawn Ryskar
+      </button>
+      <button type="button" onClick={() => useGameStore.getState().addItem("oskolok")}>
+        Give shard
+      </button>
+      <button type="button" onClick={() => getGameApi()?.zeroRadiation()}>
+        Rad 0
+      </button>
       <button
         type="button"
         onClick={() => useGameStore.getState().completeCurrentQuest()}

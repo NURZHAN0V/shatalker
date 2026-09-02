@@ -4,10 +4,19 @@ import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTextur
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
-import { HRYAK_HEIGHT, HRYAK_RADIUS, hryakTemplate } from "../data/monsters";
+import {
+  HRYAK_HEIGHT,
+  HRYAK_RADIUS,
+  RYSKAR_HEIGHT,
+  RYSKAR_WIDTH,
+  hryakTemplate,
+  ryskarTemplate,
+  type MonsterKind,
+} from "../data/monsters";
 
 export type MonsterActor = {
   id: string;
+  kind: MonsterKind;
   name: string;
   level: number;
   hp: number;
@@ -25,23 +34,16 @@ export type MonsterActor = {
 
 let spawnSeq = 1;
 
-export function createHryak(scene: Scene, x: number, z: number): MonsterActor {
-  const id = `${hryakTemplate.id}_${spawnSeq++}`;
-  const mesh = MeshBuilder.CreateCapsule(
-    id,
-    { height: HRYAK_HEIGHT, radius: HRYAK_RADIUS, tessellation: 8 },
-    scene,
-  );
-  mesh.position = new Vector3(x, HRYAK_HEIGHT / 2, z);
-
-  const mat = new StandardMaterial(`${id}_mat`, scene);
-  mat.diffuseColor = new Color3(0.58, 0.22, 0.14);
-  mat.specularColor = new Color3(0.06, 0.03, 0.02);
-  mesh.material = mat;
-
+function attachOverhead(
+  scene: Scene,
+  mesh: Mesh,
+  id: string,
+  labelText: string,
+  topY: number,
+): { hpFill: Mesh; labelTexture: DynamicTexture } {
   const barBg = MeshBuilder.CreatePlane(`${id}_hpbg`, { width: 1.1, height: 0.12 }, scene);
   barBg.parent = mesh;
-  barBg.position.y = HRYAK_HEIGHT / 2 + 0.45;
+  barBg.position.y = topY + 0.45;
   barBg.billboardMode = Mesh.BILLBOARDMODE_ALL;
   const bgMat = new StandardMaterial(`${id}_hpbg_mat`, scene);
   bgMat.diffuseColor = new Color3(0.08, 0.07, 0.05);
@@ -60,7 +62,7 @@ export function createHryak(scene: Scene, x: number, z: number): MonsterActor {
 
   const label = MeshBuilder.CreatePlane(`${id}_name`, { width: 1.4, height: 0.32 }, scene);
   label.parent = mesh;
-  label.position.y = HRYAK_HEIGHT / 2 + 0.72;
+  label.position.y = topY + 0.72;
   label.billboardMode = Mesh.BILLBOARDMODE_ALL;
   const labelTexture = new DynamicTexture(
     `${id}_name_tex`,
@@ -77,7 +79,7 @@ export function createHryak(scene: Scene, x: number, z: number): MonsterActor {
   ctx.fillStyle = "#e6d9a8";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(hryakTemplate.name, 128, 32);
+  ctx.fillText(labelText, 128, 32);
   labelTexture.update();
   const labelMat = new StandardMaterial(`${id}_name_mat`, scene);
   labelMat.diffuseTexture = labelTexture;
@@ -86,9 +88,31 @@ export function createHryak(scene: Scene, x: number, z: number): MonsterActor {
   labelMat.backFaceCulling = false;
   labelMat.disableLighting = true;
   label.material = labelMat;
+  return { hpFill, labelTexture };
+}
 
+export function createHryak(scene: Scene, x: number, z: number): MonsterActor {
+  const id = `${hryakTemplate.id}_${spawnSeq++}`;
+  const mesh = MeshBuilder.CreateCapsule(
+    id,
+    { height: HRYAK_HEIGHT, radius: HRYAK_RADIUS, tessellation: 8 },
+    scene,
+  );
+  mesh.position = new Vector3(x, HRYAK_HEIGHT / 2, z);
+  const mat = new StandardMaterial(`${id}_mat`, scene);
+  mat.diffuseColor = new Color3(0.58, 0.22, 0.14);
+  mat.specularColor = new Color3(0.06, 0.03, 0.02);
+  mesh.material = mat;
+  const { hpFill, labelTexture } = attachOverhead(
+    scene,
+    mesh,
+    id,
+    hryakTemplate.name,
+    HRYAK_HEIGHT / 2,
+  );
   const actor: MonsterActor = {
     id,
+    kind: "hryak",
     name: hryakTemplate.name,
     level: hryakTemplate.level,
     hp: hryakTemplate.hp,
@@ -98,6 +122,46 @@ export function createHryak(scene: Scene, x: number, z: number): MonsterActor {
     attackCooldown: hryakTemplate.attackCooldown,
     attackCooldownLeft: 0,
     expReward: hryakTemplate.expReward,
+    mesh,
+    hpFill,
+    labelTexture,
+    bodyMat: mat,
+  };
+  setMonsterHpBar(actor);
+  return actor;
+}
+
+export function createRyskar(scene: Scene, x: number, z: number): MonsterActor {
+  const id = `${ryskarTemplate.id}_${spawnSeq++}`;
+  const mesh = MeshBuilder.CreateBox(
+    id,
+    { width: RYSKAR_WIDTH, height: RYSKAR_HEIGHT, depth: RYSKAR_WIDTH },
+    scene,
+  );
+  mesh.position = new Vector3(x, RYSKAR_HEIGHT / 2, z);
+  const mat = new StandardMaterial(`${id}_mat`, scene);
+  mat.diffuseColor = new Color3(0.42, 0.38, 0.22);
+  mat.specularColor = new Color3(0.05, 0.05, 0.03);
+  mesh.material = mat;
+  const { hpFill, labelTexture } = attachOverhead(
+    scene,
+    mesh,
+    id,
+    ryskarTemplate.name,
+    RYSKAR_HEIGHT / 2,
+  );
+  const actor: MonsterActor = {
+    id,
+    kind: "ryskar",
+    name: ryskarTemplate.name,
+    level: ryskarTemplate.level,
+    hp: ryskarTemplate.hp,
+    maxHp: ryskarTemplate.maxHp,
+    attack: ryskarTemplate.attack,
+    attackRadius: ryskarTemplate.attackRadius,
+    attackCooldown: ryskarTemplate.attackCooldown,
+    attackCooldownLeft: 0,
+    expReward: ryskarTemplate.expReward,
     mesh,
     hpFill,
     labelTexture,

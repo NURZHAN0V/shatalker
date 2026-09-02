@@ -17,7 +17,6 @@ import {
   SKY_DIAMETER,
   SKY_SEGMENTS,
   SKY_TEX,
-  SKY_ZENITH,
 } from "../data/atmosphere";
 import { ANOMALIES, ANOMALY_EMISSIVE, RIM_DEBRIS, RIM_POSTS } from "../data/decor";
 
@@ -62,68 +61,28 @@ function createSkyDome(scene: Scene): Mesh {
     {
       diameter: SKY_DIAMETER,
       segments: SKY_SEGMENTS,
-      slice: 0.5,
       sideOrientation: Mesh.BACKSIDE,
     },
     scene,
   );
-  applyPolarSkyUVs(sky);
-  paintSkyGradient(sky);
   const mat = new StandardMaterial("skyMat", scene);
   mat.disableLighting = true;
-  mat.diffuseColor = Color3.White();
+  mat.fogEnabled = false;
+  mat.disableDepthWrite = true;
+  mat.diffuseColor = Color3.Black();
   mat.specularColor = Color3.Black();
-  mat.emissiveColor = Color3.White();
-  const tex = new Texture(SKY_TEX, scene, true, false);
+  mat.emissiveColor = Color3.Black();
+  const tex = new Texture(SKY_TEX, scene, { noMipmap: true, invertY: false });
   tex.wrapU = Texture.CLAMP_ADDRESSMODE;
   tex.wrapV = Texture.CLAMP_ADDRESSMODE;
   mat.emissiveTexture = tex;
   sky.material = mat;
-  sky.useVertexColors = true;
   sky.applyFog = false;
   sky.isPickable = false;
-  sky.freezeWorldMatrix();
+  sky.infiniteDistance = true;
+  sky.ignoreCameraMaxZ = true;
+  sky.alwaysSelectAsActiveMesh = true;
   return sky;
-}
-
-/** Zenith-centered 512 sky: center of the image is up, rim is the horizon. */
-function applyPolarSkyUVs(mesh: Mesh): void {
-  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
-  if (!pos) return;
-  const uvs = new Float32Array((pos.length / 3) * 2);
-  const radius = SKY_DIAMETER / 2;
-  for (let i = 0, u = 0; i < pos.length; i += 3, u += 2) {
-    const x = pos[i];
-    const y = pos[i + 1];
-    const z = pos[i + 2];
-    const polar = Math.acos(Math.max(-1, Math.min(1, y / radius))) / (Math.PI * 0.5);
-    const ang = Math.atan2(x, z);
-    uvs[u] = 0.5 + 0.5 * polar * Math.sin(ang);
-    uvs[u + 1] = 0.5 + 0.5 * polar * Math.cos(ang);
-  }
-  mesh.setVerticesData(VertexBuffer.UVKind, uvs);
-}
-
-function paintSkyGradient(mesh: Mesh): void {
-  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
-  if (!pos) return;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (let i = 1; i < pos.length; i += 3) {
-    minY = Math.min(minY, pos[i]);
-    maxY = Math.max(maxY, pos[i]);
-  }
-  const span = Math.max(1e-5, maxY - minY);
-  const colors = new Float32Array((pos.length / 3) * 4);
-  for (let i = 0, c = 0; i < pos.length; i += 3, c += 4) {
-    const t = (pos[i + 1] - minY) / span;
-    const u = t * t;
-    colors[c] = FOG.r + (SKY_ZENITH.r - FOG.r) * u;
-    colors[c + 1] = FOG.g + (SKY_ZENITH.g - FOG.g) * u;
-    colors[c + 2] = FOG.b + (SKY_ZENITH.b - FOG.b) * u;
-    colors[c + 3] = 1;
-  }
-  mesh.setVerticesData(VertexBuffer.ColorKind, colors);
 }
 
 function createDirtGround(scene: Scene): Mesh {

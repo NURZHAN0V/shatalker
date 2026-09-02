@@ -1,6 +1,7 @@
-import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useGameStore, type RadioChannel } from "../state/gameStore";
 import { getGameApi } from "../debug/gmCommands";
+import { isTextInput } from "../game/input";
 
 const TABS: { id: RadioChannel; label: string }[] = [
   { id: "system", label: "Система" },
@@ -24,6 +25,7 @@ export function ChatBox() {
   const lines = radio.filter((m) => m.channel === tab);
   const lastLineId = lines.length > 0 ? lines[lines.length - 1].id : -1;
   const linesRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useLayoutEffect(() => {
     const el = linesRef.current;
@@ -35,6 +37,26 @@ export function ChatBox() {
     const frame = requestAnimationFrame(stickToLatest);
     return () => cancelAnimationFrame(frame);
   }, [tab, lastLineId, lines.length]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Enter" && e.code !== "Escape") return;
+      if (e.code === "Escape") {
+        if (document.activeElement === inputRef.current) {
+          inputRef.current?.blur();
+          e.preventDefault();
+        }
+        return;
+      }
+      if (isTextInput(e.target) && e.target !== inputRef.current) return;
+      if (document.activeElement === inputRef.current) return;
+      e.preventDefault();
+      setTab("perimeter");
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -68,6 +90,7 @@ export function ChatBox() {
       {tab === "perimeter" ? (
         <form className="chat-form" onSubmit={onSubmit}>
           <input
+            ref={inputRef}
             type="text"
             value={draft}
             maxLength={120}

@@ -22,7 +22,9 @@ const (
 	medkitID         = "medkit_small"
 	medkitHeal       = 30
 	meatID           = "hryak_meat"
+	oskolokID        = "oskolok"
 	killQuestID      = "kill_hryaks_3"
+	fetchQuestID     = "fetch_oskolok_1"
 )
 
 var (
@@ -124,6 +126,7 @@ func (s *Service) Register(name, password string) (*AuthResult, error) {
 		items := []models.InventoryItem{
 			{PlayerID: p.ID, ItemID: medkitID, Quantity: 0},
 			{PlayerID: p.ID, ItemID: meatID, Quantity: 0},
+			{PlayerID: p.ID, ItemID: oskolokID, Quantity: 0},
 		}
 		if err := s.repo.ReplaceInventory(tx, p.ID, items); err != nil {
 			return err
@@ -186,13 +189,12 @@ func (s *Service) SnapshotByUser(userID int64) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	pq, err := s.repo.GetPlayerQuest(p.ID, killQuestID)
-	if errors.Is(err, repo.ErrNotFound) {
-		pq = &models.PlayerQuest{PlayerID: p.ID, QuestID: killQuestID, Status: "available", Progress: 0}
-	} else if err != nil {
+	pqs, err := s.repo.ListPlayerQuests(p.ID)
+	if err != nil {
 		return nil, err
 	}
-	snap := snapshotFrom(p, inv, *pq)
+	pq := pickCurrentQuest(pqs)
+	snap := snapshotFrom(p, inv, pq)
 	return &snap, nil
 }
 
@@ -318,6 +320,15 @@ func (s *Service) CompleteQuest(userID int64, questID string) (*Snapshot, error)
 	if pq.Status != "active" || pq.Progress < q.Required {
 		return nil, ErrQuestState
 	}
+	if q.Type == "fetch" && q.Target != "" {
+		invCheck, err := s.repo.ListInventory(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		if qtyOf(invCheck, q.Target) < q.Required {
+			return nil, ErrQuestState
+		}
+	}
 	grantExp(p, float64(q.RewardExp))
 	inv, err := s.repo.ListInventory(p.ID)
 	if err != nil {
@@ -325,6 +336,9 @@ func (s *Service) CompleteQuest(userID int64, questID string) (*Snapshot, error)
 	}
 	if q.RewardItemID != "" {
 		inv = addItem(p.ID, inv, q.RewardItemID, 1)
+	}
+	if q.Type == "fetch" && q.Target != "" {
+		inv = addItem(p.ID, inv, q.Target, -q.Required)
 	}
 	pq.Status = "completed"
 	err = s.repo.DB().Transaction(func(tx *gorm.DB) error {
@@ -458,7 +472,7 @@ func defaultPlayer(userID int64, name string) *models.Player {
 }
 
 func snapshotFrom(p *models.Player, inv []models.InventoryItem, pq models.PlayerQuest) Snapshot {
-	bag := map[string]int{medkitID: 0, meatID: 0}
+	bag := map[string]int{medkitID: 0, meatID: 0, oskolokID: 0}
 	for _, it := range inv {
 		bag[it.ItemID] = it.Quantity
 	}
@@ -524,7 +538,7 @@ func inventoryRows(playerID int64, bag map[string]int) []models.InventoryItem {
 	if bag == nil {
 		bag = map[string]int{}
 	}
-	ids := []string{medkitID, meatID}
+	ids := []string{medkitID, meatID, oskolokID}
 	seen := map[string]bool{}
 	out := make([]models.InventoryItem, 0, len(ids)+len(bag))
 	for _, id := range ids {
@@ -576,6 +590,33 @@ func addItem(playerID int64, inv []models.InventoryItem, id string, delta int) [
 		inv = append(inv, models.InventoryItem{PlayerID: playerID, ItemID: id, Quantity: q})
 	}
 	return inv
+}
+
+func pickCurrentQuest(pqs []models.PlayerQuest) models.PlayerQuest {
+	by := map[string]models.PlayerQuest{}
+	for _, pq := range pqs {
+		by[pq.QuestID] = pq
+	}
+	for _, pq := range pqs {
+		if pq.Status == "active" {
+			return pq
+		}
+	}
+	kill, hasKill := by[killQuestID]
+	fetch, hasFetch := by[fetchQuestID]
+	if hasFetch && fetch.Status == "completed" && hasKill && kill.Status == "completed" {
+		return fetch
+	}
+	if hasKill && kill.Status == "completed" && (!hasFetch || fetch.Status != "completed") {
+		if hasFetch {
+			return fetch
+		}
+		return models.PlayerQuest{QuestID: fetchQuestID, Status: "available", Progress: 0}
+	}
+	if hasKill {
+		return kill
+	}
+	return models.PlayerQuest{QuestID: killQuestID, Status: "available", Progress: 0}
 }
 
 func grantExp(p *models.Player, amount float64) {

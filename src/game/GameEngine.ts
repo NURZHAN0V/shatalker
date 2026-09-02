@@ -9,10 +9,28 @@ import "@babylonjs/core/Culling/ray";
 import type { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
-import { playerDefaults, ATTACK_COOLDOWN, PLAYER_HEIGHT, PLAYER_RADIUS, INTERACT_RANGE, GROUND_Y } from "../data/player";
-import { HRYAK_RADIUS, HRYAK_SPAWNS, MAX_HRYAKS } from "../data/monsters";
+import { playerDefaults, ATTACK_COOLDOWN, SKILL_ATTACK_MULT, SKILL_COOLDOWN, SKILL_MP_COST, PLAYER_HEIGHT, PLAYER_RADIUS, INTERACT_RANGE, GROUND_Y } from "../data/player";
+import {
+  HRYAK_RADIUS,
+  HRYAK_SPAWNS,
+  MAX_HRYAKS,
+  MAX_RYSKARS,
+  RYSKAR_RADIUS,
+  RYSKAR_SPAWNS,
+} from "../data/monsters";
 import { collidersFor, type Aabb2 } from "../data/colliders";
-import { killHryaksQuest } from "../data/quests";
+import { ANOMALIES } from "../data/decor";
+import {
+  ANOMALY_DAMAGE,
+  RAD_CAMP,
+  RAD_DOWN,
+  RAD_EDGE,
+  RAD_HP_DAMAGE,
+  RAD_HP_TICK,
+  RAD_MAX,
+  RAD_UP,
+} from "../data/atmosphere";
+import { questById } from "../data/quests";
 import {
   BOT_ATTACK_COOLDOWN,
   BOT_ATTACK_RANGE,
@@ -37,6 +55,7 @@ import { createPlayer } from "./createPlayer";
 import { createRemoteStalker, disposeRemote, type RemoteActor } from "./createRemotes";
 import {
   createHryak,
+  createRyskar,
   disposeMonster,
   setMonsterSelected,
   type MonsterActor,
@@ -85,6 +104,9 @@ export class GameEngine {
   private selected: MonsterActor | null = null;
   private destination: Vector3 | null = null;
   private attackCooldown = 0;
+  private skillCooldown = 0;
+  private radHpAccum = 0;
+  private readonly lootedAnomalies = new Set<string>();
   private fpsAccum = 0;
   private mapAccum = 0;
   private botThinkAccum = 0;
@@ -156,6 +178,10 @@ export class GameEngine {
       const at = this.placeXz(spot.x, spot.z, HRYAK_RADIUS);
       this.monsters.push(createHryak(this.scene, at.x, at.z));
     }
+    for (const spot of RYSKAR_SPAWNS) {
+      const at = this.placeXz(spot.x, spot.z, RYSKAR_RADIUS);
+      this.monsters.push(createRyskar(this.scene, at.x, at.z));
+    }
 
     this.input.attach();
     this.onKey = (e: KeyboardEvent) => {
@@ -173,12 +199,19 @@ export class GameEngine {
         return;
       }
       if (store.dialogOpen) return;
+      if (e.code === "KeyM") {
+        store.toggleMinimap();
+        return;
+      }
       if (e.code === "KeyI") {
         store.toggleInventory();
         return;
       }
       if (e.code === "Digit1" || e.code === "Numpad1") {
         this.attack();
+      }
+      if (e.code === "Digit2" || e.code === "Numpad2") {
+        this.useSkill();
       }
       if (e.code === "Tab") {
         e.preventDefault();
@@ -204,6 +237,7 @@ export class GameEngine {
       if (Math.hypot(evt.clientX - start.x, evt.clientY - start.y) > CLICK_DRAG_PX) {
         return;
       }
+      if (useGameStore.getState().hp <= 0) return;
       const pick = this.scene.pick(
         this.scene.pointerX,
         this.scene.pointerY,
@@ -221,23 +255,29 @@ export class GameEngine {
       if (this.disposed) return;
       const dt = Math.min(this.engine.getDeltaTime() / 1000, 0.05);
       this.attackCooldown = Math.max(0, this.attackCooldown - dt);
+      this.skillCooldown = Math.max(0, this.skillCooldown - dt);
       const store = useGameStore.getState();
       if (store.autoEnabled && this.input.moving) {
         store.setAutoEnabled(false);
       }
       this.tickAuto();
-      this.destination = tickMovement(
-        dt,
-        this.player,
-        this.camera,
-        this.input,
-        this.destination,
-        this.marker,
-        playerDefaults.moveSpeed,
-        PLAYER_RADIUS,
-        this.colliders,
-        this.jump,
-      );
+      if (store.hp > 0) {
+        this.destination = tickMovement(
+          dt,
+          this.player,
+          this.camera,
+          this.input,
+          this.destination,
+          this.marker,
+          playerDefaults.moveSpeed,
+          PLAYER_RADIUS,
+          this.colliders,
+          this.jump,
+        );
+      } else {
+        this.destination = null;
+        this.marker.setEnabled(false);
+      }
       if (useGameStore.getState().autoEnabled) {
         this.marker.setEnabled(false);
       }
@@ -257,6 +297,7 @@ export class GameEngine {
       if (this.mapAccum >= MAP_HZ) {
         this.mapAccum = 0;
         this.drawMinimap();
+        this.tickHazards();
       }
       this.saveAccum += dt;
       if (this.saveAccum >= 8) {
@@ -314,6 +355,32 @@ export class GameEngine {
     const store = useGameStore.getState();
     store.applyHeal();
     store.addLog("[Система] Здоровье и выносливость восстановлены.");
+  }
+
+  respawnAtCamp(): void {
+    const store = useGameStore.getState();
+    if (store.hp > 0) return;
+    store.reviveAtCamp();
+    this.setPlayerXz(this.kefir.mesh.position.x + 1.6, this.kefir.mesh.position.z);
+    this.destination = null;
+    const p = this.player.position;
+    setSavePosition(p.x, p.z);
+    store.setPosition(p.x, p.y, p.z);
+    store.setToast(null);
+    store.addLog("[Система] Очнулся у Кефира.");
+  }
+
+  attackTarget(): void {
+    this.attack();
+  }
+
+  useSkill(): void {
+    this.heavyStrike();
+  }
+
+  zeroRadiation(): void {
+    useGameStore.getState().setRadiation(0);
+    useGameStore.getState().addLog("[Система] Радиация сброшена.");
   }
 
   toggleSky(): void {
@@ -507,7 +574,8 @@ export class GameEngine {
   }
 
   spawnMonster(): void {
-    if (this.monsters.length >= MAX_HRYAKS) {
+    const n = this.monsters.filter((m) => m.kind === "hryak").length;
+    if (n >= MAX_HRYAKS) {
       useGameStore.getState().addLog("[Система] Хватит хряков.");
       return;
     }
@@ -516,6 +584,19 @@ export class GameEngine {
     const at = this.placeXz(p.x + forward.x * 6, p.z + forward.z * 6, HRYAK_RADIUS);
     this.monsters.push(createHryak(this.scene, at.x, at.z));
     useGameStore.getState().addLog("[Система] Хряк появился.");
+  }
+
+  spawnRyskar(): void {
+    const n = this.monsters.filter((m) => m.kind === "ryskar").length;
+    if (n >= MAX_RYSKARS) {
+      useGameStore.getState().addLog("[Система] Хватит рыскарей.");
+      return;
+    }
+    const p = this.player.position;
+    const { forward } = cameraFlatBasis(this.camera);
+    const at = this.placeXz(p.x + forward.x * 6, p.z + forward.z * 6, RYSKAR_RADIUS);
+    this.monsters.push(createRyskar(this.scene, at.x, at.z));
+    useGameStore.getState().addLog("[Система] Рыскарь появился.");
   }
 
   notePlayerChat(): void {
@@ -586,7 +667,7 @@ export class GameEngine {
       }
       return;
     }
-    if (quest.progress >= killHryaksQuest.required) {
+    if (quest.progress >= questById(quest.id).required) {
       const d = this.walkTo(this.kefir.mesh.position.x, this.kefir.mesh.position.z);
       this.autoLog("toKefirTurnin", "[Авто] Сдаю заказ.");
       if (d <= INTERACT_RANGE) {
@@ -594,10 +675,24 @@ export class GameEngine {
       }
       return;
     }
-    const prey = this.nearestMonster();
+    const def = questById(quest.id);
+    if (def.type === "fetch") {
+      const a = this.nearestLootableAnomaly();
+      if (!a) {
+        this.autoLog("noShard", "[Авто] Нет осколка.");
+        return;
+      }
+      const d = this.walkTo(a.x, a.z);
+      this.autoLog("toAnomaly", "[Авто] Иду к сфере.");
+      if (d <= INTERACT_RANGE + a.r) {
+        this.tryLootAnomaly();
+      }
+      return;
+    }
+    const prey = this.nearestMonsterForQuest();
     if (!prey) {
       this.destination = null;
-      this.autoLog("noHryak", "[Авто] Нет хряков.");
+      this.autoLog("noPrey", "[Авто] Нет цели.");
       return;
     }
     if (this.selected !== prey) {
@@ -608,7 +703,7 @@ export class GameEngine {
       this.autoLog("attack", "[Авто] Бью.");
       this.attack();
     } else {
-      this.autoLog("hunt", "[Авто] Цель: хряк.");
+      this.autoLog("hunt", `[Авто] Цель: ${prey.name}.`);
     }
   }
 
@@ -678,22 +773,35 @@ export class GameEngine {
   }
 
   private tickRespawn(dt: number): void {
-    if (this.monsters.length >= MAX_HRYAKS) {
-      this.respawnLeft = HRYAK_RESPAWN;
-      return;
-    }
     this.respawnLeft -= dt;
     if (this.respawnLeft > 0) return;
     this.respawnLeft = HRYAK_RESPAWN;
-    const spot = HRYAK_SPAWNS.find((s) =>
-      this.monsters.every(
-        (m) => Math.hypot(m.mesh.position.x - s.x, m.mesh.position.z - s.z) > 2.5,
-      ),
-    );
-    const at = spot ?? HRYAK_SPAWNS[0];
-    if (!at) return;
-    const pos = this.placeXz(at.x, at.z, HRYAK_RADIUS);
-    this.monsters.push(createHryak(this.scene, pos.x, pos.z));
+    const hryaks = this.monsters.filter((m) => m.kind === "hryak").length;
+    if (hryaks < MAX_HRYAKS) {
+      const spot = HRYAK_SPAWNS.find((s) =>
+        this.monsters.every(
+          (m) => Math.hypot(m.mesh.position.x - s.x, m.mesh.position.z - s.z) > 2.5,
+        ),
+      );
+      const at = spot ?? HRYAK_SPAWNS[0];
+      if (at) {
+        const pos = this.placeXz(at.x, at.z, HRYAK_RADIUS);
+        this.monsters.push(createHryak(this.scene, pos.x, pos.z));
+      }
+      return;
+    }
+    const ryskars = this.monsters.filter((m) => m.kind === "ryskar").length;
+    if (ryskars < MAX_RYSKARS) {
+      const spot = RYSKAR_SPAWNS.find((s) =>
+        this.monsters.every(
+          (m) => Math.hypot(m.mesh.position.x - s.x, m.mesh.position.z - s.z) > 2.5,
+        ),
+      );
+      const at = spot ?? RYSKAR_SPAWNS[0];
+      if (!at) return;
+      const pos = this.placeXz(at.x, at.z, RYSKAR_RADIUS);
+      this.monsters.push(createRyskar(this.scene, pos.x, pos.z));
+    }
   }
 
   private worldToMap(x: number, z: number): { u: number; v: number } {
@@ -720,8 +828,14 @@ export class GameEngine {
   questTarget(): { x: number; z: number } | null {
     const kefir = this.kefir.mesh.position;
     const quest = useGameStore.getState().quest;
-    if (quest.status === "active" && quest.progress < killHryaksQuest.required) {
-      const nearest = this.nearestMonster();
+    const def = questById(quest.id);
+    if (quest.status === "active" && quest.progress < def.required) {
+      if (def.type === "fetch") {
+        const a = ANOMALIES[0];
+        if (!a) return { x: kefir.x, z: kefir.z };
+        return { x: a.x, z: a.z };
+      }
+      const nearest = this.nearestMonsterForQuest();
       if (!nearest) return null;
       return { x: nearest.mesh.position.x, z: nearest.mesh.position.z };
     }
@@ -744,7 +858,8 @@ export class GameEngine {
       this.drawDot(ctx, bot.mesh.position.x, bot.mesh.position.z, "#6a6e52", 2.5);
     }
     for (const m of this.monsters) {
-      this.drawDot(ctx, m.mesh.position.x, m.mesh.position.z, "#b33a2e", 3);
+      const color = m.kind === "ryskar" ? "#8a7a32" : "#b33a2e";
+      this.drawDot(ctx, m.mesh.position.x, m.mesh.position.z, color, 3);
     }
 
     const kefir = this.kefir.mesh.position;
@@ -774,7 +889,7 @@ export class GameEngine {
       if (store.hp <= 0) continue;
       const dmg = rollDamage(monster.attack);
       const downed = store.applyPlayerDamage(dmg);
-      store.addCombat(`[Бой] Хряк нанёс ${dmg} урона.`);
+      store.addCombat(`[Бой] ${monster.name} нанёс ${dmg} урона.`);
       const head = this.player.position.add(new Vector3(0, PLAYER_HEIGHT, 0));
       const screen = projectToScreen(this.scene, this.engine, head);
       if (screen) {
@@ -782,6 +897,7 @@ export class GameEngine {
       }
       if (downed) {
         store.addLog("[Система] Новичок без сознания.");
+        store.setToast("Без сознания");
         if (store.autoEnabled) store.setAutoEnabled(false);
       }
     }
@@ -789,6 +905,8 @@ export class GameEngine {
 
   private tryInteract(): void {
     const store = useGameStore.getState();
+    if (store.hp <= 0) return;
+    if (this.tryLootAnomaly()) return;
     const dx = this.player.position.x - this.kefir.mesh.position.x;
     const dz = this.player.position.z - this.kefir.mesh.position.z;
     if (Math.hypot(dx, dz) > INTERACT_RANGE) {
@@ -803,7 +921,7 @@ export class GameEngine {
     const nearest = this.nearestMonster();
     if (!nearest) {
       this.setSelected(null);
-      useGameStore.getState().addCombat("[Бой] Нет живых хряков.");
+      useGameStore.getState().addCombat("[Бой] Нет живых мутантов.");
       return;
     }
     this.setSelected(nearest);
@@ -812,6 +930,39 @@ export class GameEngine {
 
   private nearestMonster(): MonsterActor | null {
     return this.nearestMonsterTo(this.player.position.x, this.player.position.z);
+  }
+
+  private nearestMonsterForQuest(): MonsterActor | null {
+    const def = questById(useGameStore.getState().quest.id);
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+    let best: MonsterActor | null = null;
+    let bestD = Infinity;
+    for (const m of this.monsters) {
+      if (def.type === "kill" && m.kind !== def.target) continue;
+      const d = Math.hypot(m.mesh.position.x - px, m.mesh.position.z - pz);
+      if (d < bestD) {
+        bestD = d;
+        best = m;
+      }
+    }
+    return best;
+  }
+
+  private nearestLootableAnomaly(): (typeof ANOMALIES)[number] | null {
+    let best: (typeof ANOMALIES)[number] | null = null;
+    let bestD = Infinity;
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+    for (const a of ANOMALIES) {
+      if (this.lootedAnomalies.has(a.id)) continue;
+      const d = Math.hypot(px - a.x, pz - a.z);
+      if (d < bestD) {
+        bestD = d;
+        best = a;
+      }
+    }
+    return best;
   }
 
   private nearestMonsterTo(px: number, pz: number): MonsterActor | null {
@@ -840,6 +991,7 @@ export class GameEngine {
 
   private attack(): void {
     const store = useGameStore.getState();
+    if (store.hp <= 0) return;
     if (this.attackCooldown > 0) return;
     const monster = this.selected;
     if (!monster) {
@@ -847,13 +999,13 @@ export class GameEngine {
       return;
     }
     if (!inAttackRange(this.player, monster)) {
-      store.addCombat("[Бой] Хряк слишком далеко.");
+      store.addCombat(`[Бой] ${monster.name} слишком далеко.`);
       return;
     }
     this.attackCooldown = ATTACK_COOLDOWN;
     const dmg = rollDamage(store.attack);
     applyHit(monster, dmg);
-    store.addCombat(`[Бой] Хряк получил ${dmg} урона.`);
+    store.addCombat(`[Бой] ${monster.name} получил ${dmg} урона.`);
     this.syncTarget();
 
     const head = monster.mesh.position.add(new Vector3(0, 1.4, 0));
@@ -863,7 +1015,43 @@ export class GameEngine {
     }
 
     if (monster.hp <= 0) {
-      store.addCombat("[Бой] Хряк пал.");
+      store.addCombat(`[Бой] ${monster.name} пал.`);
+      this.removeMonster(monster, true);
+    }
+  }
+
+  private heavyStrike(): void {
+    const store = useGameStore.getState();
+    if (store.hp <= 0) return;
+    if (this.skillCooldown > 0) {
+      store.addCombat("[Бой] Приём ещё не готов.");
+      return;
+    }
+    const monster = this.selected;
+    if (!monster) {
+      store.addCombat("[Бой] Нет цели. Нажмите Tab.");
+      return;
+    }
+    if (!inAttackRange(this.player, monster)) {
+      store.addCombat(`[Бой] ${monster.name} слишком далеко.`);
+      return;
+    }
+    if (!store.spendMp(SKILL_MP_COST)) {
+      store.addCombat("[Бой] Мало выносливости.");
+      return;
+    }
+    this.skillCooldown = SKILL_COOLDOWN;
+    const dmg = rollDamage(Math.round(store.attack * SKILL_ATTACK_MULT));
+    applyHit(monster, dmg);
+    store.addCombat(`[Бой] Тяжёлый удар: ${monster.name} ${dmg}.`);
+    this.syncTarget();
+    const head = monster.mesh.position.add(new Vector3(0, 1.4, 0));
+    const screen = projectToScreen(this.scene, this.engine, head);
+    if (screen) {
+      store.addDamageNumber({ value: dmg, left: screen.left, top: screen.top });
+    }
+    if (monster.hp <= 0) {
+      store.addCombat(`[Бой] ${monster.name} пал.`);
       this.removeMonster(monster, true);
     }
   }
@@ -872,8 +1060,10 @@ export class GameEngine {
     const store = useGameStore.getState();
     if (loot) {
       store.grantExp(monster.expReward);
-      store.addItem("hryak_meat");
-      store.addKillProgress();
+      if (monster.kind === "hryak") {
+        store.addItem("hryak_meat");
+      }
+      store.addKillProgress(monster.kind);
     }
     const idx = this.monsters.indexOf(monster);
     if (idx >= 0) this.monsters.splice(idx, 1);
@@ -881,6 +1071,64 @@ export class GameEngine {
       this.setSelected(null);
     }
     disposeMonster(monster);
+  }
+
+  private tryLootAnomaly(): boolean {
+    if (!this.anomalies.isEnabled()) {
+      return false;
+    }
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+    for (const a of ANOMALIES) {
+      if (this.lootedAnomalies.has(a.id)) continue;
+      if (Math.hypot(px - a.x, pz - a.z) > INTERACT_RANGE + a.r) continue;
+      this.lootedAnomalies.add(a.id);
+      useGameStore.getState().addItem("oskolok");
+      return true;
+    }
+    return false;
+  }
+
+  private tickHazards(): void {
+    const store = useGameStore.getState();
+    if (store.hp <= 0) return;
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+    if (this.anomalies.isEnabled()) {
+      for (const a of ANOMALIES) {
+        if (Math.hypot(px - a.x, pz - a.z) <= a.r + PLAYER_RADIUS) {
+          const downed = store.applyPlayerDamage(ANOMALY_DAMAGE);
+          if (downed) {
+            store.addLog("[Система] Новичок без сознания.");
+            store.setToast("Без сознания");
+            if (store.autoEnabled) store.setAutoEnabled(false);
+          }
+          break;
+        }
+      }
+    }
+    const edge = Math.max(Math.abs(px), Math.abs(pz));
+    const camp = Math.hypot(px, pz);
+    let rad = store.radiation;
+    if (edge >= RAD_EDGE) rad += RAD_UP;
+    else if (camp <= RAD_CAMP) rad -= RAD_DOWN;
+    else rad -= 1;
+    rad = Math.max(0, Math.min(RAD_MAX, rad));
+    store.setRadiation(rad);
+    if (rad >= RAD_MAX) {
+      this.radHpAccum += MAP_HZ;
+      if (this.radHpAccum >= RAD_HP_TICK) {
+        this.radHpAccum = 0;
+        const downed = store.applyPlayerDamage(RAD_HP_DAMAGE);
+        if (downed) {
+          store.addLog("[Система] Новичок без сознания.");
+          store.setToast("Без сознания");
+          if (store.autoEnabled) store.setAutoEnabled(false);
+        }
+      }
+    } else {
+      this.radHpAccum = 0;
+    }
   }
 
   private syncTarget(): void {

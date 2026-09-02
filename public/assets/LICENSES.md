@@ -21,6 +21,7 @@
 
 ## Небо купола
 
-- Файл: `tex/sky_overcast_512.jpg` (512×512 JPEG)
-- Пасмурный зенит для купола, не HDRI. Сгенерирован под Периметр (оливково-серые облака, без солнца).
+- Файл: `tex/sky_overcast_1k.jpg` (1024×512 JPEG, 8-bit)
+- Источник: [Overcast Soil (Pure Sky)](https://polyhaven.com/a/overcast_soil_puresky) — Jarod Guest / Sergej Majboroda, Poly Haven, CC0 1.0
+- В репозитории только JPEG (эквирект, верхняя половина — небо). HDR/EXR в клиент не кладём.
 

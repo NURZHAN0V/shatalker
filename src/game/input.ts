@@ -18,6 +18,8 @@ export class InputState {
         e.code === "KeyA" ||
         e.code === "KeyS" ||
         e.code === "KeyD" ||
+        e.code === "Digit2" ||
+        e.code === "KeyM" ||
         e.code === "Digit1" ||
         e.code === "Tab" ||
         e.code === "KeyF" ||

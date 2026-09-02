@@ -1,7 +1,7 @@
 import { create } from "zustand";
-import { playerDefaults } from "../data/player";
-import { killHryaksQuest } from "../data/quests";
-import { items, type ItemId } from "../data/items";
+import { playerDefaults, RESPAWN_HP_FRAC } from "../data/player";
+import { killHryaksQuest, nextQuestId, questById } from "../data/quests";
+import { EMPTY_BAG, items, type ItemId } from "../data/items";
 import { loadSave, scheduleSave, flushSave, setSavePosition, getSavePosition, type SavePayload } from "./save";
 import { onQuestTurnedIn } from "../debug/autoTest";
 import { getGameApi } from "../debug/gmCommands";
@@ -68,6 +68,8 @@ type GameStore = {
   dialogOpen: boolean;
   inventoryOpen: boolean;
   autoEnabled: boolean;
+  showMinimap: boolean;
+  radiation: number;
   quest: QuestState;
   inventory: Record<ItemId, number>;
   setFps: (fps: number) => void;
@@ -79,6 +81,10 @@ type GameStore = {
   addRadio: (channel: RadioChannel, text: string, from?: string | null) => void;
   sendPerimeter: (text: string) => void;
   setAutoEnabled: (on: boolean) => void;
+  toggleMinimap: () => void;
+  setRadiation: (value: number) => void;
+  spendMp: (cost: number) => boolean;
+  reviveAtCamp: () => void;
   addDamageNumber: (floater: Omit<DamageFloater, "id">) => void;
   removeDamageNumber: (id: number) => void;
   setToast: (text: string | null) => void;
@@ -92,7 +98,8 @@ type GameStore = {
   setInventoryOpen: (open: boolean) => void;
   toggleInventory: () => void;
   acceptQuest: () => void;
-  addKillProgress: () => void;
+  addKillProgress: (kind?: string) => void;
+  syncFetchProgress: () => void;
   turnInQuest: () => boolean;
   completeCurrentQuest: () => void;
   addItem: (id: ItemId, amount?: number) => void;
@@ -131,6 +138,7 @@ function savePayload(s: {
   attack: number;
   quest: QuestState;
   inventory: Record<ItemId, number>;
+  radiation: number;
 }): SavePayload {
   return {
     name: s.name,
@@ -144,6 +152,7 @@ function savePayload(s: {
     attack: s.attack,
     quest: s.quest,
     inventory: s.inventory,
+    radiation: s.radiation,
   };
 }
 
@@ -177,6 +186,7 @@ function toServerSnapshot(s: {
     inventory: {
       medkit_small: s.inventory.medkit_small ?? 0,
       hryak_meat: s.inventory.hryak_meat ?? 0,
+      oskolok: s.inventory.oskolok ?? 0,
     },
   };
 }
@@ -185,6 +195,7 @@ function bagFrom(snap: ServerSnapshot): Record<ItemId, number> {
   return {
     medkit_small: Math.max(0, Math.floor(snap.inventory.medkit_small ?? 0)),
     hryak_meat: Math.max(0, Math.floor(snap.inventory.hryak_meat ?? 0)),
+    oskolok: Math.max(0, Math.floor(snap.inventory.oskolok ?? 0)),
   };
 }
 
@@ -220,12 +231,14 @@ export const useGameStore = create<GameStore>((set, get) => {
   dialogOpen: false,
   inventoryOpen: false,
   autoEnabled: false,
+  showMinimap: true,
+  radiation: saved?.radiation ?? 0,
   quest: saved?.quest ?? {
     id: killHryaksQuest.id,
     status: "available",
     progress: 0,
   },
-  inventory: saved?.inventory ?? { medkit_small: 0, hryak_meat: 0 },
+  inventory: saved?.inventory ?? { ...EMPTY_BAG },
   apiAuthed: isLoggedIn(),
   wsConnected: false,
   onlineNames: [],
@@ -285,6 +298,26 @@ export const useGameStore = create<GameStore>((set, get) => {
     if (was === on) return;
     set({ autoEnabled: on });
     get().addLog(on ? "[Авто] Включён." : "[Авто] Выключен.");
+  },
+  toggleMinimap: () => set((s) => ({ showMinimap: !s.showMinimap })),
+  setRadiation: (value) => {
+    const radiation = Math.max(0, Math.min(100, Math.floor(value)));
+    if (get().radiation === radiation) return;
+    set({ radiation });
+    persist();
+  },
+  spendMp: (cost) => {
+    const s = get();
+    if (s.mp < cost) return false;
+    set({ mp: s.mp - cost });
+    persist();
+    return true;
+  },
+  reviveAtCamp: () => {
+    const s = get();
+    const hp = Math.max(1, Math.floor(s.maxHp * RESPAWN_HP_FRAC));
+    set({ hp, mp: Math.max(s.mp, Math.floor(s.maxMp * 0.4)) });
+    persist();
   },
   addDamageNumber: (floater) => {
     const id = floaterSeq++;
@@ -364,14 +397,17 @@ export const useGameStore = create<GameStore>((set, get) => {
   acceptQuest: () => {
     const s = get();
     if (s.quest.status === "active") return;
+    const nextId =
+      s.quest.status === "completed" ? nextQuestId(s.quest.id) : s.quest.id;
+    const def = questById(nextId);
     if (isLoggedIn()) {
       void (async () => {
         try {
           getGameApi()?.syncSavePosition();
           await get().flushPersist();
-          const snap = await apiAcceptQuest(killHryaksQuest.id);
+          const snap = await apiAcceptQuest(def.id);
           get().hydrateFromServer(snap);
-          get().addLog(`[Заказ] Принят: ${killHryaksQuest.name}.`);
+          get().addLog(`[Заказ] Принят: ${def.name}.`);
         } catch (err) {
           get().addLog(`[API] ${err instanceof Error ? err.message : "заказ"}`);
         }
@@ -379,21 +415,35 @@ export const useGameStore = create<GameStore>((set, get) => {
       return;
     }
     set({
-      quest: { ...s.quest, status: "active", progress: 0 },
+      quest: { id: def.id, status: "active", progress: 0 },
     });
-    get().addLog(`[Заказ] Принят: ${killHryaksQuest.name}.`);
+    get().addLog(`[Заказ] Принят: ${def.name}.`);
     persist();
   },
-  addKillProgress: () => {
+  addKillProgress: (kind = "hryak") => {
     const s = get();
     if (s.quest.status !== "active") return;
-    if (s.quest.progress >= killHryaksQuest.required) return;
+    const def = questById(s.quest.id);
+    if (def.type !== "kill" || def.target !== kind) return;
+    if (s.quest.progress >= def.required) return;
     const progress = s.quest.progress + 1;
     set({ quest: { ...s.quest, progress } });
-    get().addLog(
-      `[Заказ] ${killHryaksQuest.name}: ${progress}/${killHryaksQuest.required}.`,
-    );
-    if (progress >= killHryaksQuest.required) {
+    get().addLog(`[Заказ] ${def.name}: ${progress}/${def.required}.`);
+    if (progress >= def.required) {
+      get().addLog("[Заказ] Заказ можно сдать.");
+    }
+    persist();
+  },
+  syncFetchProgress: () => {
+    const s = get();
+    if (s.quest.status !== "active") return;
+    const def = questById(s.quest.id);
+    if (def.type !== "fetch") return;
+    const have = s.inventory[def.target as ItemId] ?? 0;
+    const progress = Math.min(def.required, have);
+    if (progress === s.quest.progress) return;
+    set({ quest: { ...s.quest, progress } });
+    if (progress >= def.required) {
       get().addLog("[Заказ] Заказ можно сдать.");
     }
     persist();
@@ -403,7 +453,8 @@ export const useGameStore = create<GameStore>((set, get) => {
       inventory: { ...s.inventory, [id]: (s.inventory[id] ?? 0) + amount },
     }));
     get().addLog(`[Система] Получено: ${items[id].name}.`);
-    persist();
+  persist();
+    get().syncFetchProgress();
   },
   useItem: (id) => {
     const s = get();
@@ -446,14 +497,19 @@ export const useGameStore = create<GameStore>((set, get) => {
   },
   turnInQuest: () => {
     const s = get();
+    const def = questById(s.quest.id);
     if (s.quest.status !== "active") return false;
-    if (s.quest.progress < killHryaksQuest.required) return false;
+    if (s.quest.progress < def.required) return false;
+    if (def.type === "fetch") {
+      const need = def.target as ItemId;
+      if ((s.inventory[need] ?? 0) < def.required) return false;
+    }
     if (isLoggedIn()) {
       void (async () => {
         try {
           getGameApi()?.syncSavePosition();
           await get().flushPersist();
-          const snap = await apiCompleteQuest(killHryaksQuest.id);
+          const snap = await apiCompleteQuest(def.id);
           get().hydrateFromServer(snap);
           get().setDialogOpen(false);
           get().addLog("[Заказ] Награда получена. Заказ сдан.");
@@ -464,14 +520,24 @@ export const useGameStore = create<GameStore>((set, get) => {
       })();
       return true;
     }
-    get().grantExp(killHryaksQuest.rewardExp);
-    for (const itemId of killHryaksQuest.rewardItems) {
+    if (def.type === "fetch") {
+      const need = def.target as ItemId;
+      const have = s.inventory[need] ?? 0;
+      set({
+        inventory: { ...s.inventory, [need]: have - def.required },
+        quest: { ...s.quest, status: "completed" },
+        dialogOpen: false,
+      });
+    } else {
+      set({
+        quest: { ...s.quest, status: "completed" },
+        dialogOpen: false,
+      });
+    }
+    get().grantExp(def.rewardExp);
+    for (const itemId of def.rewardItems) {
       get().addItem(itemId);
     }
-    set({
-      quest: { ...get().quest, status: "completed" },
-      dialogOpen: false,
-    });
     get().addLog("[Заказ] Награда получена. Заказ сдан.");
     persist();
     onQuestTurnedIn();
@@ -479,22 +545,23 @@ export const useGameStore = create<GameStore>((set, get) => {
   },
   completeCurrentQuest: () => {
     const s = get();
+    const def = questById(s.quest.id);
     if (s.quest.status === "completed") {
       get().addLog("[Система] Заказ уже сдан.");
       return;
     }
-    if (
-      s.quest.status === "active" &&
-      s.quest.progress >= killHryaksQuest.required
-    ) {
+    if (s.quest.status === "active" && s.quest.progress >= def.required) {
       get().turnInQuest();
       return;
     }
+    if (def.type === "fetch") {
+      get().addItem(def.target as ItemId, def.required);
+    }
     set({
       quest: {
-        ...s.quest,
+        id: def.id,
         status: "active",
-        progress: killHryaksQuest.required,
+        progress: def.required,
       },
     });
     get().addLog("[Заказ] Заказ можно сдать.");
@@ -540,7 +607,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         z: snap.position.z,
       },
       quest: {
-        id: killHryaksQuest.id,
+        id: snap.quest.id ? questById(snap.quest.id).id : killHryaksQuest.id,
         status: questStatus,
         progress: Math.max(0, Math.floor(snap.quest.progress)),
       },

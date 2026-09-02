@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { useGameStore } from "../state/gameStore";
 import { ChatBox } from "./ChatBox";
 import { LoginPanel } from "./LoginPanel";
+import { ActionBar } from "./ActionBar";
+import { getGameApi } from "../debug/gmCommands";
 
 export function HUD() {
   const name = useGameStore((s) => s.name);
@@ -12,6 +14,7 @@ export function HUD() {
   const maxMp = useGameStore((s) => s.maxMp);
   const exp = useGameStore((s) => s.exp);
   const expToNext = useGameStore((s) => s.expToNext);
+  const radiation = useGameStore((s) => s.radiation);
   const toast = useGameStore((s) => s.toast);
   const setToast = useGameStore((s) => s.setToast);
   const autoEnabled = useGameStore((s) => s.autoEnabled);
@@ -26,6 +29,8 @@ export function HUD() {
   const hpPct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
   const mpPct = Math.max(0, Math.min(100, (mp / maxMp) * 100));
   const expPct = Math.max(0, Math.min(100, (exp / expToNext) * 100));
+  const radPct = Math.max(0, Math.min(100, radiation));
+  const downed = hp <= 0;
 
   return (
     <>
@@ -62,6 +67,13 @@ export function HUD() {
         <div className="bar exp">
           <span style={{ width: `${expPct}%` }} />
         </div>
+        <div className="bar-label">
+          <span>Радиация</span>
+          <span>{radiation}</span>
+        </div>
+        <div className="bar rad">
+          <span style={{ width: `${radPct}%` }} />
+        </div>
         <button
           type="button"
           className={autoEnabled ? "auto-btn on" : "auto-btn"}
@@ -73,6 +85,16 @@ export function HUD() {
       </section>
 
       <ChatBox />
+      <ActionBar />
+
+      {downed ? (
+        <section className="pda-panel downed-banner">
+          <p>Без сознания</p>
+          <button type="button" onClick={() => getGameApi()?.respawnAtCamp()}>
+            Подняться
+          </button>
+        </section>
+      ) : null}
 
       {toast ? <div className="toast">{toast}</div> : null}
     </>

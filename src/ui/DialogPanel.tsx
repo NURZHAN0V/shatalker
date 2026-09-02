@@ -1,6 +1,6 @@
 import { useGameStore } from "../state/gameStore";
 import { traderKefir } from "../data/npcs";
-import { killHryaksQuest } from "../data/quests";
+import { nextQuestId, questById } from "../data/quests";
 
 export function DialogPanel() {
   const open = useGameStore((s) => s.dialogOpen);
@@ -11,9 +11,10 @@ export function DialogPanel() {
 
   if (!open) return null;
 
+  const def = questById(quest.id);
+  const offer = quest.status === "completed" ? questById(nextQuestId(quest.id)) : def;
   const canAccept = quest.status === "available" || quest.status === "completed";
-  const canTurnIn =
-    quest.status === "active" && quest.progress >= killHryaksQuest.required;
+  const canTurnIn = quest.status === "active" && quest.progress >= def.required;
   const done = quest.status === "completed";
 
   return (
@@ -24,6 +25,16 @@ export function DialogPanel() {
           <p key={line}>{line}</p>
         ))}
         {done ? <p>Дело сделано. Не путайся под ногами.</p> : null}
+        {canAccept ? (
+          <p>
+            Заказ: {offer.name}. {offer.description}
+          </p>
+        ) : null}
+        {quest.status === "active" ? (
+          <p>
+            Сейчас: {def.name} ({quest.progress}/{def.required})
+          </p>
+        ) : null}
         <div className="dialog-actions">
           {canAccept ? (
             <button type="button" onClick={() => acceptQuest()}>

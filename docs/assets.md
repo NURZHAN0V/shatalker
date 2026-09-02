@@ -50,7 +50,7 @@
 - Одна текстура на материал на старте (albedo). Без набора из 5 карт на ящик.
 - Бюджет сцены: мало уникальных материалов, примитивы и паки low-poly, не «фото меша».
 - Иконки UI: один размер на набор, например **64×64** или **128×128**, одинаковый паддинг.
-- Имена: `public/assets/tex/dirt_512.png`, `public/assets/tex/sky_overcast_512.jpg`, не `image (3).png`.
+- Имена: `public/assets/tex/dirt_512.png`, `public/assets/tex/sky_overcast_1k.jpg`, не `image (3).png`.
 - Лицензия пака — в `public/assets/LICENSES.md`, когда появятся чужие файлы.
 
 Если ассет тяжелее примитива и FPS падает — выкинуть ассет, вернуть капсулу. См. [performance.md](./performance.md).
@@ -63,7 +63,7 @@
 
 | Что | Как дёшево | Чего нет |
 | --- | --- | --- |
-| Небо | Перевёрнутая полусфера, `tex/sky_overcast_512.jpg` + градиент к туману | HDRI, Skybox 2K+, закат, второе солнце |
+| Небо | Перевёрнутая полусфера, `tex/sky_overcast_1k.jpg` (эквирект 1024×512) + градиент к туману | HDRI/EXR в рантайме, Skybox 2K+, закат, второе солнце |
 | Земля | Один albedo 512, тайлинг, путь вида `public/assets/tex/dirt_512.png` | 4K, normal+roughness+AO пачкой |
 | Аномалия | 2–4 сферы, emissive на `StandardMaterial` | Частицы, glow layer, point light на каждую |
 
