@@ -1,0 +1,62 @@
+# Production stack. Not for daily `make serve`.
+# TLS belongs in front of nginx :80.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shatalker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shatalker}
+      POSTGRES_DB: shatalker
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shatalker -d shatalker"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    image: shatalker-api
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: ["migrate", "up"]
+    environment:
+      DATABASE_URL: postgres://shatalker:${POSTGRES_PASSWORD:-shatalker}@postgres:5432/shatalker?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: shatalker-api
+    environment:
+      APP_PORT: "8080"
+      APP_ENV: prod
+      DATABASE_URL: postgres://shatalker:${POSTGRES_PASSWORD:-shatalker}@postgres:5432/shatalker?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  web:
+    image: shatalker-web
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_API_URL: /
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
